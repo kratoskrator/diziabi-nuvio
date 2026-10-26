@@ -1,12 +1,12 @@
 {
   "name": "DiziAbi TV for Nuvio",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "scrapers": [
     {
       "id": "diziabi-tv",
       "name": "DiziAbi TV",
       "description": "DiziAbi movies, series and anime with Turkish audio/subtitles. Resolves public HLS streams directly on the TV.",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "filename": "diziabi.js",
       "supportedTypes": ["movie", "tv", "series"],
       "contentLanguage": ["tr"],

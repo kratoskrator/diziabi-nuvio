@@ -1,4 +1,4 @@
-/* DiziAbi TV for Nuvio v1.0.0
+/* DiziAbi TV for Nuvio v1.0.1
 MIT License
 
 Copyright (c) 2026 Russian Cinema Nuvio provider contributors
@@ -110,17 +110,28 @@ var u = require("utils");
 var USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 var MAX_BYTES = 1024 * 1024;
 
-function safeError(message, blocked, transient) {
+function safeError(message, blocked, transient, cancelled) {
   var error = new Error(message);
   error.providerSafe = true;
   error.siteBlocked = !!blocked;
   error.transient = !!transient;
+  error.cancelled = !!cancelled;
   return error;
 }
 
 // Only request state is retained. Native TV redirects do not safely scope a
 // manually supplied Cookie header, so this provider never copies site cookies.
-function session(deadline) { return { deadline: deadline || Date.now() + 50000, blocked: {} }; }
+function session(deadline) { return { deadline: deadline || Date.now() + 50000, blocked: {}, pending: [], cancelled: false }; }
+
+// Abort unused alternatives, including in the TV guest where timers are absent.
+// State belongs to one lookup, so another title lookup remains independent.
+function cancel(state) {
+  if (!state || state.cancelled) return;
+  state.cancelled = true;
+  var pending = (state.pending || []).slice();
+  state.pending = [];
+  pending.forEach(function (abort) { abort(); });
+}
 
 // The TV bridge preserves raw bytes but only decodes UTF-8/Latin-1 itself.
 var CP1251 = 'ЂЃ‚ѓ„…†‡€‰Љ‹ЊЌЋЏђ‘’“”•–—\u0098™љ›њќћџ\u00a0ЎўЈ¤Ґ¦§Ё©Є«¬\u00ad®Ї°±Ііґµ¶·ё№є»јЅѕї';
@@ -197,6 +208,7 @@ function request(url, options) {
   }
 
   function attempt(number) {
+    if (state.cancelled) return Promise.reject(safeError('Lookup cancelled: ' + site, false, false, true));
     if (state.blocked[site]) return Promise.reject(safeError(state.blocked[site], true));
     var remaining = state.deadline - Date.now();
     if (remaining <= 0) return Promise.reject(safeError('Lookup time budget exhausted: ' + site));
@@ -204,12 +216,20 @@ function request(url, options) {
     var timer = null;
     var finished = false;
     return new Promise(function (resolve, reject) {
+      function cancelPending() {
+        finish(safeError('Lookup cancelled: ' + site, false, false, true));
+        if (controller) controller.abort();
+      }
       function finish(error, value) {
         if (finished) return;
         finished = true;
         if (timer !== null && typeof clearTimeout === 'function') clearTimeout(timer);
+        var index = state.pending.indexOf(cancelPending);
+        if (index !== -1) state.pending.splice(index, 1);
         if (error) reject(error); else resolve(value);
       }
+      if (!state.pending) state.pending = [];
+      state.pending.push(cancelPending);
       if (typeof setTimeout === 'function') {
         timer = setTimeout(function () {
           finish(safeError('Request timed out: ' + site, false, true));
@@ -219,7 +239,7 @@ function request(url, options) {
       var init = { method: method, headers: headers, credentials: 'same-origin' };
       if (options.body !== undefined) init.body = options.body;
       if (controller) init.signal = controller.signal;
-      Promise.resolve().then(function () { return fetch(url, init); }).then(function (response) {
+      Promise.resolve().then(function () { return finished ? null : fetch(url, init); }).then(function (response) {
         if (finished) return;
         var mitigation = response.headers && typeof response.headers.get === 'function' ? response.headers.get('cf-mitigated') : '';
         if (response.status === 403 || response.status === 429 || response.status === 451) throw blocked('Site access blocked (HTTP ' + response.status + '): ' + site);
@@ -250,14 +270,14 @@ function request(url, options) {
     }).catch(function (error) {
       // One GET retry for a transport failure or a temporary upstream outage.
       // Never retry access restrictions, verification pages, or malformed data.
-      if (method === 'GET' && number === 0 && error.transient && state.deadline - Date.now() >= timeout) return attempt(1);
+      if (!state.cancelled && method === 'GET' && number === 0 && error.transient && state.deadline - Date.now() >= timeout) return attempt(1);
       throw error;
     });
   }
   return attempt(0);
 }
 
-module.exports = { request: request, USER_AGENT: USER_AGENT, session: session };
+module.exports = { request: request, USER_AGENT: USER_AGENT, session: session, cancel: cancel };
 
 },
 "media": function(module, exports, require) {
@@ -723,12 +743,27 @@ function resolve(page, cfg, meta) {
   cfg = cfg || {};
   if (!cfg.session) cfg.session = http.session();
   if (!page || typeof page.html !== 'string' || !/^https:\/\//i.test(page.url || '')) return Promise.resolve([]);
-  return Promise.all(frames(page.html, page.url).map(function (frame) {
-    return resolveFrame(frame, page, cfg, meta).catch(function () { return []; });
-  })).then(function (groups) {
-    var found = [], seen = {};
-    groups.forEach(function (group) { group.forEach(function (stream) { if (!seen[stream.url] && found.length < MAX_FRAMES) { seen[stream.url] = true; found.push(stream); } }); });
-    return found;
+  var choices = frames(page.html, page.url);
+  if (!choices.length) return Promise.resolve([]);
+  // Independent players need not all respond before a confirmed source can be
+  // played. Keep full manifest validation inside each player before selecting it.
+  return new Promise(function (resolve) {
+    var remaining = choices.length, finished = false;
+    function complete(streams) {
+      if (finished) return;
+      remaining--;
+      if (streams.length) {
+        finished = true;
+        http.cancel(cfg.session);
+        resolve(streams);
+      } else if (!remaining) {
+        finished = true;
+        resolve([]);
+      }
+    }
+    choices.forEach(function (frame) {
+      resolveFrame(frame, page, cfg, meta).then(complete, function () { complete([]); });
+    });
   });
 }
 module.exports = { resolve: resolve, frames: frames, configuration: configuration, variants: variants, duration: duration };
@@ -839,7 +874,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
         return page ? player.resolve(page, cfg, meta) : [];
       });
     });
-  }).catch(function (error) { warn(error); return []; });
+  }).catch(function (error) { warn(error); return []; }).then(function (streams) {
+    http.cancel(cfg.session);
+    return streams;
+  });
 }
 
 function onSettings() {

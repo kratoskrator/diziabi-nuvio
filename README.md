@@ -2,6 +2,8 @@
 
 A Nuvio JavaScript provider for movies, series and anime listed on [DiziAbi](https://www.diziabi.net/). It resolves public HLS streams directly through Nuvio's TV network service. A running PC or relay server is not required.
 
+Version **1.0.1** returns the first fully verified player and cancels unused alternatives, so a stalled extra player cannot hold up a working source. All advertised video variants in the selected master are still checked, preserving resolution and audio choices. Current movie and series checks succeeded on 26 October 2026; see [VALIDATION.md](VALIDATION.md).
+
 ## Install
 
 Add this repository manifest in Nuvio's plugin settings:
@@ -11,6 +13,8 @@ https://raw.githubusercontent.com/kratoskrator/diziabi-nuvio/main/manifest.json
 ```
 
 Enable **DiziAbi TV**, search for a title in Nuvio's existing catalog, and open the movie or the exact episode. This provider adds playback sources; it does not add browsing catalog rows. Anime uses Nuvio's ordinary series season/episode numbering.
+
+For an existing installation, refresh the repository and confirm version **1.0.1** before reopening the title. Remove and re-add the same manifest if Nuvio keeps an older cached version.
 
 The provider uses Nuvio's supplied TMDB key to translate a selected title ID into its name and year. If that key is unavailable, enter your own TMDB API key or API Read Access Token in the provider's settings. DiziAbi itself does not need an account for the public sources supported here. The optional website setting accepts an HTTPS origin if the site changes address.
 
@@ -34,7 +38,7 @@ npm test
 npm run build
 ```
 
-`src/` contains the editable source, `test/` contains synthetic fixtures and regression tests, and `diziabi.js` is the generated Nuvio bundle. The runtime uses ES5-style JavaScript and Promises, without a browser DOM, Node.js APIs or execution of downloaded website scripts. Lookup work is bounded by a 50-second budget, response size limits, a small candidate limit, and one retry for transient GET failures. Requests use ordinary HTTPS with the website/player's request context and do not copy cookies.
+`src/` contains the editable source, `test/` contains synthetic fixtures and regression tests, and `diziabi.js` is the generated Nuvio bundle. The runtime uses ES5-style JavaScript and Promises, without a browser DOM, Node.js APIs or execution of downloaded website scripts. Lookup work is bounded by a 50-second budget, response size limits, a small candidate limit, and one retry for transient GET failures. Requests use ordinary HTTPS with the website/player's request context and do not copy cookies. Cancellation belongs to a single lookup and works through the native TV abort bridge without guest timers.
 
 `diziabi-nuvio-source.zip` contains the same editable source and tests for repositories published with only the install files at the root. Captured live responses, credentials and expiring media tokens are excluded.
 
